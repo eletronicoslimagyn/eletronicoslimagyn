@@ -1120,9 +1120,14 @@
         });
 
         function utf8ToBase64(str) {
-            return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, function(match, p1) {
-                return String.fromCharCode('0x' + p1);
-            }));
+            // Codificação UTF-8 sem depender de encodeURIComponent para caracteres Unicode.
+            const bytes = new TextEncoder().encode(str);
+            const tamanhoBloco = 8192;
+            let binario = '';
+            for (let i = 0; i < bytes.length; i += tamanhoBloco) {
+                binario += String.fromCharCode(...bytes.subarray(i, i + tamanhoBloco));
+            }
+            return btoa(binario);
         }
 
         const coresFundoELG = Object.freeze({neutro:'#f5f5f3', azul:'#e9f3ff', gelo:'#f0f8fa', areia:'#faf1e4', verde:'#eaf6ed', lavanda:'#f2edfc', grafite:'#dce3eb'});
@@ -1754,8 +1759,16 @@
             if (!html.includes('function baixarBackupCompletoJSON') || !html.includes('function restaurarBackupCompleto')) {
                 throw new Error('Funções de backup ausentes; operação cancelada.');
             }
-            if (html.includes('id="elg-backup-privado"') || html.includes('backup-privado-elg-html')) {
+            const documentoPublico = new DOMParser().parseFromString(html, 'text/html');
+            if (documentoPublico.querySelector('[id="elg-backup-privado"], [id="backup-privado-elg-html"]')) {
                 throw new Error('Dados privados detectados no HTML. Publicação cancelada.');
+            }
+            // O HTML publicado nunca deve carregar dados de OS já preenchidos.
+            // Os formulários vazios e a lógica do painel permanecem intactos.
+            for (const campo of documentoPublico.querySelectorAll('#os-cliente, #os-telefone, #os-senha')) {
+                if (campo.value || campo.getAttribute('value')) {
+                    throw new Error('Campo privado preenchido no HTML. Publicação cancelada.');
+                }
             }
             return html;
         }
@@ -1776,8 +1789,8 @@
                 alert('Repositório inválido. Use usuario/repositorio, sem https://github.com/.');
                 return;
             }
-            if (!path || !branch) {
-                alert('Preencha o caminho do arquivo e a branch. Exemplo: index.html e main.');
+            if (!path || !branch || path.startsWith('/') || path.split('/').includes('..')) {
+                alert('Confira o caminho e a branch. Exemplo: index.html e main.');
                 return;
             }
             const btnGithub = event && event.currentTarget ? event.currentTarget : null;
@@ -1831,7 +1844,13 @@
                     sairAdmin();
                 } else {
                     const errData = await putRes.json().catch(() => ({}));
-                    alert("Erro do GitHub: " + (errData.message || "Falha ao gravar arquivo. Verifique o Token."));
+                    const detalhe = putRes.status === 401 ? 'Token inválido ou expirado.' :
+                        putRes.status === 403 ? 'Permissão insuficiente, limite de API ou bloqueio do GitHub.' :
+                        putRes.status === 404 ? 'Repositório ou caminho não encontrado, ou token sem acesso.' :
+                        putRes.status === 409 ? 'Conflito de versão. Recarregue e tente novamente.' :
+                        putRes.status === 422 ? 'Dados rejeitados pelo GitHub. Confira branch e arquivo.' :
+                        'Falha ao gravar arquivo.';
+                    alert('Erro do GitHub (' + putRes.status + '): ' + (errData.message || detalhe));
                     document.getElementById('view-admin').classList.remove('hidden');
                     document.getElementById('view-loja').classList.add('hidden');
                 }
@@ -1917,7 +1936,7 @@
             try {
                 salvarConfiguracao(true);
                 const htmlConteudo = criarHTMLComProdutosAtuais();
-                if (htmlConteudo.includes('id="elg-backup-privado"') || htmlConteudo.includes('backup-privado-elg-html')) {
+                if (new DOMParser().parseFromString(htmlConteudo, 'text/html').querySelector('[id="elg-backup-privado"], [id="backup-privado-elg-html"]')) {
                     throw new Error('Dados privados encontrados no HTML. Exportação cancelada.');
                 }
                 const blob = new Blob([htmlConteudo], {type: 'text/html;charset=utf-8'});
